@@ -329,7 +329,28 @@ func (cpu *m6502) adc(mode AddrMode) {
 	// NZCV
 	cpu.considerExtraCycle = true
 	val, _ := cpu.get_operand(mode)
-	cpu._adc(val)
+	if cpu.is_flag_set(flagD) {
+		// todo: tests + NV flags
+		ln := (cpu.A & 0xf) + (val & 0xf)
+		hn := (cpu.A >> 4) + (val >> 4)
+		if cpu.is_flag_set(flagC) {
+			ln++
+		}
+		if ln > 9 {
+			hn++
+			ln -= 10
+		}
+		if hn > 9 {
+			hn -= 10
+			cpu.set_flag(flagC)
+		} else {
+			cpu.clear_flag(flagC)
+		}
+		cpu.A = (hn << 4) + ln
+		cpu.checkZ(cpu.A)
+	} else {
+		cpu._adc(val)
+	}
 }
 
 func (cpu *m6502) and(mode AddrMode) {
