@@ -83,7 +83,7 @@ type Game struct {
 func (g *Game) reset() {
 	g.cpu.init_cpu()
 	g.slapstic.init_slapstic()
-	g.eeprom.init_eeprom()
+	g.eeprom.reset_eeprom()
 	for i := 0; i < len(g.wram); i++ {
 		g.wram[i] = 0
 	}
@@ -128,6 +128,16 @@ func port_hold_handler(key ebiten.Key, varChanged *uint8, pressVal uint8, releas
 	}
 }
 
+func port_toggle_handler(key ebiten.Key, varChanged *uint8, val1 uint8, val2 uint8) {
+	if inpututil.IsKeyJustPressed(key) {
+		if *varChanged == val1 {
+			*varChanged = val2
+		} else {
+			*varChanged = val1
+		}
+	}
+}
+
 func (g *Game) poll_keys() {
 	port_hold_handler(ebiten.KeyZ, &g.COIN1, 0x02, 0)
 	port_hold_handler(ebiten.KeyX, &g.COIN2, 0x01, 0)
@@ -140,6 +150,10 @@ func (g *Game) poll_keys() {
 	port_hold_handler(ebiten.KeyK, &g.P2_DOWN, 0x20, 0)
 	port_hold_handler(ebiten.KeyL, &g.P2_RIGHT, 0x40, 0)
 	port_hold_handler(ebiten.KeyJ, &g.P2_LEFT, 0x80, 0)
+
+	if !isJS {
+		port_toggle_handler(ebiten.KeyC, &g.SERVICE, 0, 0x80)
+	}
 }
 
 func (g *Game) curr_irq_scanline() int {
@@ -388,8 +402,6 @@ func main() {
 		display:  make([]byte, DISPLAY_WIDTH*DISPLAY_HEIGHT*4),
 	}
 	cpu.init_cpu()
-	// todo: remove temp
-	// game.SERVICE = 0x80
 
 	for i := 0; i < 8; i++ {
 		clocks_per_irq_line[i] = int(float32(i*32+16) * CPU_CLOCKS_PER_SCANLINE)

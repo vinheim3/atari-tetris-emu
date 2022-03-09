@@ -23,8 +23,12 @@ func (eeprom *e2804) write(addr uint16, val uint8) {
 }
 
 func (eeprom *e2804) init_eeprom() {
-	eeprom.locked = true
+	eeprom.reset_eeprom()
 	for i := 0; i < len(eeprom.mem); i++ {
 		eeprom.mem[i] = 0xff
 	}
+}
+
+func (eeprom *e2804) reset_eeprom() {
+	eeprom.locked = true
 }
