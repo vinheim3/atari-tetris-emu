@@ -85,6 +85,8 @@ type Game struct {
 	P2_DOWN  uint8 // 0x20
 	P2_RIGHT uint8 // 0x40
 	P2_LEFT  uint8 // 0x80
+
+	started bool
 }
 
 func (g *Game) reset() {
@@ -348,11 +350,18 @@ func (g *Game) update_display() {
 
 func (g *Game) Update() error {
 	g.poll_keys()
-	g.exec_vm()
+	if g.started {
+		g.exec_vm()
+	}
 	g.update_display()
 
-	if inpututil.IsKeyJustPressed(ebiten.KeyBackspace) {
-		g.reset()
+	if !isJS {
+		if inpututil.IsKeyJustPressed(ebiten.KeyBackspace) {
+			g.reset()
+		}
+		if inpututil.IsKeyJustPressed(ebiten.KeySpace) {
+			g.StartEmu()
+		}
 	}
 
 	return nil
@@ -364,6 +373,14 @@ func (g *Game) Draw(screen *ebiten.Image) {
 
 func (g *Game) Layout(outsideWidth, outsideHeight int) (int, int) {
 	return DISPLAY_WIDTH, DISPLAY_HEIGHT
+}
+
+func (g *Game) StartEmu() {
+	if g.started {
+		return
+	}
+	g.started = true
+	g.audioPlayer.Play()
 }
 
 func main() {
@@ -472,7 +489,6 @@ func main() {
 
 	game.audioPlayer, err = audio.NewPlayer(game.audioCtx, &apu)
 	check(err)
-	game.audioPlayer.Play()
 
 	for i := 0; i < 8; i++ {
 		clocks_per_irq_line[i] = int(float32(i*32+16) * CPU_CLOCKS_PER_SCANLINE)

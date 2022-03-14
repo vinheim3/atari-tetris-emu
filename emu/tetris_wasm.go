@@ -23,7 +23,21 @@ func setPort() js.Func {
 	return jsonFunc
 }
 
+func miscControl() js.Func {
+	jsonFunc := js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		action := args[0].String()
+		if action == "start" {
+			game.StartEmu()
+		} else if action == "reset" {
+			game.reset()
+		}
+		return nil
+	})
+	return jsonFunc
+}
+
 func init() {
 	js.Global().Set("setPort", setPort())
+	js.Global().Set("miscControl", miscControl())
 	isJS = true
 }
