@@ -18,7 +18,7 @@ type Slapstic struct {
 	is_odd bool
 }
 
-func (slapstic *Slapstic) process_bank(addr uint16, cycles int) {
+func (slapstic *Slapstic) process_bank(addr uint16) {
 	if slapstic.state == STATE_IDLE {
 		if addr == 0x0000 {
 			slapstic.state = STATE_ACTIVE
@@ -128,11 +128,11 @@ func (slapstic *Slapstic) process_bank(addr uint16, cycles int) {
 	}
 }
 
-func (slapstic *Slapstic) read(addr uint16, cycles int) uint8 {
+func (slapstic *Slapstic) read(addr uint16) uint8 {
 	bank := uint16(slapstic.curr_bank & 1)
 
 	if addr >= 0x2000 {
-		slapstic.process_bank(addr-0x2000, cycles)
+		slapstic.process_bank(addr - 0x2000)
 	}
 
 	return slapstic.rom[bank*0x4000+addr]

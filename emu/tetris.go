@@ -8,6 +8,7 @@ import (
 	"log"
 
 	"github.com/hajimehoshi/ebiten/v2"
+	"github.com/hajimehoshi/ebiten/v2/audio"
 	"github.com/hajimehoshi/ebiten/v2/inpututil"
 )
 
@@ -17,6 +18,7 @@ const (
 	CPU_CLOCKS_PER_FRAME    float32 = CPU_CLOCK / 60
 	CPU_CLOCKS_PER_SCANLINE float32 = CPU_CLOCKS_PER_FRAME / 256
 	PPU_CLOCK               float32 = MASTER_CLOCK / 2
+	APU_CLOCK               float32 = MASTER_CLOCK / 8
 
 	GAME_SCREEN_WIDTH  = 336
 	GAME_SCREEN_HEIGHT = 240
@@ -36,6 +38,9 @@ const (
 
 type Game struct {
 	cpu           *m6502
+	apu           *APU
+	pokey1        *Pokey
+	pokey2        *Pokey
 	rom           []byte
 	tiles         []byte
 	slapstic_bank uint16 // 0(or 2) and 1 (or 3) (selects 0-0x3fff, or 0x0x4000-0x7fff)
@@ -59,7 +64,9 @@ type Game struct {
 	int_risen           bool
 	clocks_for_next_irq int
 
-	display []byte
+	display     []byte
+	audioCtx    *audio.Context
+	audioPlayer *audio.Player
 
 	tilemap_pals [TILEMAP_TILE_WIDTH * TILEMAP_TILE_HEIGHT][16]Palette
 
@@ -107,6 +114,41 @@ type Palette struct {
 	green uint8
 }
 
+type APU struct {
+	audioBuffer []byte
+	clockTimer  float32
+}
+
+func (apu *APU) Read(p []byte) (n int, err error) {
+	// log.Println(len(apu.audioBuffer))
+	if len(apu.audioBuffer) > 0 {
+		n = copy(p, apu.audioBuffer)
+		apu.audioBuffer = apu.audioBuffer[n:]
+		return n, nil
+	}
+	emptyBuf := make([]byte, len(p))
+	n = copy(p, emptyBuf)
+	return n, nil
+}
+
+func (apu *APU) add_cycles(cycles int) {
+	apu.clockTimer += 44100 * float32(cycles)
+	if apu.clockTimer >= APU_CLOCK {
+		apu.clockTimer -= APU_CLOCK
+		pokey1sample := game.pokey1.get_sample()
+		pokey2sample := game.pokey2.get_sample()
+		avg := (pokey1sample + pokey2sample) / 2
+		hb := byte(avg >> 8)
+		lb := byte(avg)
+		apu.audioBuffer = append(apu.audioBuffer, lb, hb, lb, hb)
+	}
+
+	for i := 0; i < cycles; i++ {
+		game.pokey1.dec_timers()
+		game.pokey2.dec_timers()
+	}
+}
+
 //go:embed rom.bin
 //go:embed tiles.bin
 var f embed.FS
@@ -118,6 +160,10 @@ func check(e error) {
 	if e != nil {
 		panic(e)
 	}
+}
+
+func (g *Game) get_scanline() int {
+	return int(float32(g.cpu.cycles) / CPU_CLOCKS_PER_SCANLINE)
 }
 
 func port_hold_handler(key ebiten.Key, varChanged *uint8, pressVal uint8, releaseVal uint8) {
@@ -174,11 +220,17 @@ func (g *Game) exec_vm() {
 	g.clocks_for_next_irq = clocks_per_irq_line[0]
 	cpu.cycles = 0
 	for {
+		prevCycles := cpu.cycles
 		cpu.run_opcode()
+
 		if g.int_risen && cpu.is_flag_clear(flagI) {
 			g.int_risen = false
 			cpu.run_irq()
 		}
+
+		// Frequency timer
+		cyclesDone := cpu.cycles - prevCycles
+		g.apu.add_cycles(cyclesDone)
 
 		// check irqs
 		if g.clocks_for_next_irq != 0 && cpu.cycles > int(g.clocks_for_next_irq) {
@@ -315,12 +367,16 @@ func (g *Game) Layout(outsideWidth, outsideHeight int) (int, int) {
 }
 
 func main() {
+	// Get roms
 	rom, err := f.ReadFile("rom.bin")
 	check(err)
 	tiles, err := f.ReadFile("tiles.bin")
 	check(err)
+
+	// Initialize components
 	eeprom := e2804{}
 	eeprom.init_eeprom()
+
 	slapstic := Slapstic{
 		rom: rom,
 	}
@@ -328,6 +384,20 @@ func main() {
 
 	cpu := m6502{}
 	cpu.init_ops()
+
+	pokey1 := NewPokey(1)
+	pokey1.all_port_cb = func() uint8 {
+		game.VBLANK = 0x40
+		if float32(cpu.cycles) >= 240*CPU_CLOCKS_PER_SCANLINE {
+			game.VBLANK = 0
+		}
+		return game.VBLANK | game.SERVICE | game.COIN2 | game.COIN1
+	}
+	pokey2 := NewPokey(2)
+	pokey2.all_port_cb = func() uint8 {
+		return game.P1_BTN | game.P1_DOWN | game.P1_RIGHT | game.P1_LEFT | game.P2_BTN | game.P2_DOWN | game.P2_RIGHT | game.P2_LEFT
+	}
+
 	cpu.read_cb = func(addr uint16) uint8 {
 		if addr < 0x1000 {
 			return game.wram[addr]
@@ -342,23 +412,13 @@ func main() {
 			return eeprom.read(addr - 0x2400)
 		}
 		if addr >= 0x2800 && addr < 0x2810 {
-			if addr == 0x2808 {
-				game.VBLANK = 0x40
-				if float32(cpu.cycles) >= 240*CPU_CLOCKS_PER_SCANLINE {
-					game.VBLANK = 0
-				}
-				return game.VBLANK | game.SERVICE | game.COIN2 | game.COIN1
-			}
-			return 0 // todo: pokey1
+			return pokey1.read_port(uint8(addr))
 		}
 		if addr >= 0x2810 && addr < 0x2820 {
-			if addr == 0x2818 {
-				return game.P1_BTN | game.P1_DOWN | game.P1_RIGHT | game.P1_LEFT | game.P2_BTN | game.P2_DOWN | game.P2_RIGHT | game.P2_LEFT
-			}
-			return 0 // todo: pokey2
+			return pokey2.read_port(uint8(addr - 0x10))
 		}
 		if addr >= 0x4000 && addr < 0x8000 {
-			return slapstic.read(addr-0x4000, game.cpu.cycles)
+			return slapstic.read(addr - 0x4000)
 		}
 		if addr >= 0x8000 {
 			return game.rom[addr]
@@ -376,9 +436,9 @@ func main() {
 		} else if addr >= 0x2400 && addr < 0x2600 {
 			eeprom.write(addr-0x2400, val)
 		} else if addr >= 0x2800 && addr < 0x2810 {
-			return // todo: pokey1
+			pokey1.write_port(uint8(addr), val)
 		} else if addr >= 0x2810 && addr < 0x2820 {
-			return // todo: pokey2
+			pokey2.write_port(uint8(addr-0x10), val)
 		} else if addr == 0x3000 {
 			// watchdog
 			return
@@ -387,21 +447,32 @@ func main() {
 		} else if addr == 0x3800 {
 			game.int_line = false
 		} else if addr == 0x3c00 {
-			return // todo: coin counter
+			// coin counter
+			return
 		} else {
 			log.Fatalf("Writing to address %x", addr)
 		}
 	}
 
+	apu := APU{}
+
 	game = Game{
 		cpu:      &cpu,
+		apu:      &apu,
+		pokey1:   pokey1,
+		pokey2:   pokey2,
 		rom:      rom,
 		tiles:    tiles,
 		eeprom:   &eeprom,
 		slapstic: &slapstic,
 		display:  make([]byte, DISPLAY_WIDTH*DISPLAY_HEIGHT*4),
+		audioCtx: audio.NewContext(44100),
 	}
 	cpu.init_cpu()
+
+	game.audioPlayer, err = audio.NewPlayer(game.audioCtx, &apu)
+	check(err)
+	game.audioPlayer.Play()
 
 	for i := 0; i < 8; i++ {
 		clocks_per_irq_line[i] = int(float32(i*32+16) * CPU_CLOCKS_PER_SCANLINE)
