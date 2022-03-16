@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"math/rand"
 )
@@ -43,22 +44,80 @@ type PokeyChannel struct {
 	hzCounter    int
 	// Everytime the above is clocked, dec freqCounter
 	// When 0, change sample value & reset to frequency+1
-	freqCounter int
+	freqCounter uint8
 
 	isHighPhase bool
 }
 
+func (pokey *Pokey) print_state() {
+	chn1 := pokey.chn1
+	chn2 := pokey.chn2
+	chn3 := pokey.chn3
+	chn4 := pokey.chn4
+	fmt.Printf(
+		"Idx: %x, Chn1 is MHz: %t, Chn3 is MHz: %t, Chn2 clocked by Chn1: %t, Chn4 clocked by Chn3: %t, Is 15KHz: %t\n"+
+			"Chn1: freq: %x, noise sampling: %x, volume: %x, vol-only: %t\n"+
+			"Chn2: freq: %x, noise sampling: %x, volume: %x, vol-only: %t\n"+
+			"Chn3: freq: %x, noise sampling: %x, volume: %x, vol-only: %t\n"+
+			"Chn4: freq: %x, noise sampling: %x, volume: %x, vol-only: %t\n\n",
+		pokey.idx, pokey.isChn1MHzFreq, pokey.isChn3MHzFreq, pokey.isChn2ClockedByChn1, pokey.isChn4ClockedByChn3, pokey.is15KHzFreq,
+		chn1.frequency, chn1.noiseSampling, chn1.volume, chn1.volumeOnly,
+		chn2.frequency, chn2.noiseSampling, chn2.volume, chn2.volumeOnly,
+		chn3.frequency, chn3.noiseSampling, chn3.volume, chn3.volumeOnly,
+		chn4.frequency, chn4.noiseSampling, chn4.volume, chn4.volumeOnly,
+	)
+}
+
 func (chn *PokeyChannel) dec_freq_timers() {
+	pokey := chn.pokey
+	chn2 := pokey.chn2
+	chn4 := pokey.chn4
+
+	// check for borrows
+	if chn.freqCounter == 0 {
+		if chn.idx == 1 && pokey.isChn2ClockedByChn1 {
+			chn2.freqCounter--
+		}
+		if chn.idx == 3 && pokey.isChn4ClockedByChn3 {
+			chn4.freqCounter--
+		}
+	}
+
 	chn.freqCounter--
 	if chn.freqCounter == 0 {
-		chn.freqCounter = int(chn.frequency) + 1
-		chn.isHighPhase = !chn.isHighPhase
-
-		if chn.idx == 1 && chn.pokey.isChn2ClockedByChn1 {
-			chn.pokey.chn2.dec_freq_timers()
-		}
-		if chn.idx == 3 && chn.pokey.isChn4ClockedByChn3 {
-			chn.pokey.chn4.dec_freq_timers()
+		if chn.idx == 1 {
+			if pokey.isChn2ClockedByChn1 {
+				if chn2.freqCounter == 0 {
+					chn.freqCounter = chn.frequency
+					chn2.freqCounter = chn2.frequency
+					if uint16(chn.freqCounter)+7 > 0x100 {
+						chn2.freqCounter++
+					}
+					chn.freqCounter += 7
+					chn2.isHighPhase = !chn2.isHighPhase
+				}
+			} else {
+				chn.freqCounter = chn.frequency + 1
+				chn.isHighPhase = !chn.isHighPhase
+			}
+		} else if chn.idx == 3 {
+			if pokey.isChn4ClockedByChn3 {
+				if chn4.freqCounter == 0 {
+					chn.freqCounter = chn.frequency
+					chn4.freqCounter = chn4.frequency
+					if uint16(chn.freqCounter)+7 > 0x100 {
+						chn4.freqCounter++
+					}
+					chn.freqCounter += 7
+					chn4.isHighPhase = !chn4.isHighPhase
+				}
+			} else {
+				chn.freqCounter = chn.frequency + 1
+				chn.isHighPhase = !chn.isHighPhase
+			}
+		} else {
+			chn.freqCounter = chn.frequency + 1
+			chn.isHighPhase = !chn.isHighPhase
 		}
 	}
 }
