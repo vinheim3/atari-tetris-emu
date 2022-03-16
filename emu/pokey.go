@@ -46,7 +46,8 @@ type PokeyChannel struct {
 	// When 0, change sample value & reset to frequency+1
 	freqCounter uint8
 
-	isHighPhase bool
+	isHighPhase      bool
+	isValidHighPhase bool
 }
 
 func (pokey *Pokey) print_state() {
@@ -68,6 +69,14 @@ func (pokey *Pokey) print_state() {
 	)
 }
 
+func (chn *PokeyChannel) flip_high_phase() {
+	chn.isHighPhase = !chn.isHighPhase
+	chn.isValidHighPhase = false
+	if chn.isHighPhase && chn.noise_sample_pulsed() {
+		chn.isValidHighPhase = true
+	}
+}
+
 func (chn *PokeyChannel) dec_freq_timers() {
 	pokey := chn.pokey
 	chn2 := pokey.chn2
@@ -85,40 +94,31 @@ func (chn *PokeyChannel) dec_freq_timers() {
 
 	chn.freqCounter--
 	if chn.freqCounter == 0 {
-		if chn.idx == 1 {
-			if pokey.isChn2ClockedByChn1 {
-				if chn2.freqCounter == 0 {
-					chn.freqCounter = chn.frequency
-					chn2.freqCounter = chn2.frequency
-					if uint16(chn.freqCounter)+7 > 0x100 {
-						chn2.freqCounter++
-					}
-					chn.freqCounter += 7
-					chn2.isHighPhase = !chn2.isHighPhase
+		if chn.idx == 1 && pokey.isChn2ClockedByChn1 {
+			if chn2.freqCounter == 0 {
+				chn.freqCounter = chn.frequency
+				chn2.freqCounter = chn2.frequency
+				if uint16(chn.freqCounter)+7 > 0x100 {
+					chn2.freqCounter++
 				}
-			} else {
-				chn.freqCounter = chn.frequency + 1
-				chn.isHighPhase = !chn.isHighPhase
+				chn.freqCounter += 7
+				chn2.flip_high_phase()
 			}
-		} else if chn.idx == 3 {
-			if pokey.isChn4ClockedByChn3 {
-				if chn4.freqCounter == 0 {
-					chn.freqCounter = chn.frequency
-					chn4.freqCounter = chn4.frequency
-					if uint16(chn.freqCounter)+7 > 0x100 {
-						chn4.freqCounter++
-					}
-					chn.freqCounter += 7
-					chn4.isHighPhase = !chn4.isHighPhase
+			return
+		} else if chn.idx == 3 && pokey.isChn4ClockedByChn3 {
+			if chn4.freqCounter == 0 {
+				chn.freqCounter = chn.frequency
+				chn4.freqCounter = chn4.frequency
+				if uint16(chn.freqCounter)+7 > 0x100 {
+					chn4.freqCounter++
 				}
-			} else {
-				chn.freqCounter = chn.frequency + 1
-				chn.isHighPhase = !chn.isHighPhase
+				chn.freqCounter += 7
+				chn4.flip_high_phase()
 			}
-		} else {
-			chn.freqCounter = chn.frequency + 1
-			chn.isHighPhase = !chn.isHighPhase
+			return
 		}
+		chn.freqCounter = chn.frequency + 1
+		chn.flip_high_phase()
 	}
 }
 
@@ -132,7 +132,9 @@ func (chn *PokeyChannel) dec_timers() {
 
 func NewPokey(idx int) *Pokey {
 	pokey := Pokey{
-		idx: idx,
+		idx:    idx,
+		poly9:  0x1ff,
+		poly17: 0x1ffff,
 	}
 	chn1 := PokeyChannel{
 		idx:          1,
@@ -241,7 +243,7 @@ func (pokey *Pokey) write_port(addr uint8, val uint8) {
 	}
 	if addr == 8 {
 		// Audio control
-		pokey.is9bitPoly = (val & 0x80) != 0 // todo
+		pokey.is9bitPoly = (val & 0x80) != 0
 		pokey.isChn1MHzFreq = (val & 0x40) != 0
 		pokey.isChn3MHzFreq = (val & 0x20) != 0
 		pokey.isChn2ClockedByChn1 = (val & 0x10) != 0
@@ -250,9 +252,6 @@ func (pokey *Pokey) write_port(addr uint8, val uint8) {
 		pokey.isHighPassFilterChn2 = (val & 0x02) != 0 // todo
 		pokey.is15KHzFreq = (val & 0x01) != 0
 
-		if pokey.is9bitPoly {
-			log.Fatalf("implement 9-bit poly")
-		}
 		if pokey.isHighPassFilterChn1 {
 			log.Fatalf("implement high pass filter chn1")
 		}
@@ -305,64 +304,63 @@ func (pokey *Pokey) dec_timers() {
 		pokey.chn4.dec_timers()
 	}
 
-	pokey.poly4++
-	if pokey.poly4 == 0xf {
-		pokey.poly4 = 0
-	}
+	new4bit := ((pokey.poly4 & 1) ^ 1) ^ ((pokey.poly4 >> 1) & 1)
+	pokey.poly4 = (pokey.poly4 >> 1) + new4bit*0x08
 
-	pokey.poly5++
-	if pokey.poly5 == 0x1f {
-		pokey.poly5 = 0
-	}
+	new5bit := ((pokey.poly5 & 1) ^ 1) ^ ((pokey.poly5 >> 2) & 1)
+	pokey.poly5 = (pokey.poly5 >> 1) + new5bit*0x10
 
-	pokey.poly9++
-	if pokey.poly9 == 0x1ff {
-		pokey.poly9 = 0
-	}
+	new9bit := (pokey.poly9 & 1) ^ ((pokey.poly9 >> 5) & 1)
+	pokey.poly9 = (pokey.poly9 >> 1) + new9bit*0x100
 
-	pokey.poly17++
-	if pokey.poly17 == 0x1ffff {
-		pokey.poly17 = 0
-	}
+	new17bit7 := ((pokey.poly17 >> 8) & 1) ^ ((pokey.poly17 >> 13) & 1)
+	new17bit16 := pokey.poly17 & 1
+	pokey.poly17 = (pokey.poly17 >> 1) & 0xff7f
+	pokey.poly17 |= (new17bit7 << 7) | (new17bit16 << 16)
 }
 
-func (chn *PokeyChannel) get_value() uint8 {
+func (chn *PokeyChannel) noise_sample_pulsed() bool {
 	pokey := chn.pokey
-
-	if chn.volumeOnly {
-		return chn.volume
-	}
-
-	if !chn.isHighPhase {
-		return 0
-	}
 
 	is5bitSelection := (chn.noiseSampling & 4) == 0
 	is17bitSelection := (chn.noiseSampling & 2) == 0 // else 4-bit
 	consider4or17bitSelect := (chn.noiseSampling & 1) == 0
 
-	if is5bitSelection && (pokey.poly5&1) == 0 {
-		return 0
+	// inverted bit 0s
+	if is5bitSelection && (pokey.poly5&1) == 1 {
+		return false
 	}
 
 	if !consider4or17bitSelect {
-		return chn.volume
+		return true
 	}
 
 	if is17bitSelection {
 		if pokey.is9bitPoly {
 			if (pokey.poly9 & 1) == 0 {
-				return 0
+				return false
 			}
 		} else {
 			if (pokey.poly17 & 1) == 0 {
-				return 0
+				return false
 			}
 		}
 	} else {
 		if (pokey.poly4 & 1) == 0 {
-			return 0
+			return false
 		}
+	}
+
+	return true
+}
+
+func (chn *PokeyChannel) get_value() uint8 {
+	if chn.volumeOnly {
+		return chn.volume
+	}
+
+	if !chn.isValidHighPhase {
+		return 0
 	}
 
 	return chn.volume
