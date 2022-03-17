@@ -31,7 +31,7 @@ const (
 	TILEMAP_TILE_HEIGHT   = TILEMAP_SCREEN_HEIGHT / 8
 
 	DISPLAY_WIDTH  = GAME_SCREEN_WIDTH
-	DISPLAY_HEIGHT = GAME_SCREEN_HEIGHT
+	DISPLAY_HEIGHT = GAME_SCREEN_HEIGHT + 16 // for the settings + empty row
 	// DISPLAY_WIDTH  = 512 // to cover both screens
 	// DISPLAY_HEIGHT = 496 // both heights combined
 )
@@ -87,6 +87,80 @@ type Game struct {
 	P2_LEFT  uint8 // 0x80
 
 	started bool
+}
+
+func (g *Game) display_string(tileX int, tileY int, text string, pals [16]Palette) {
+	for i, c := range text {
+		g.plot_tile(tileX+i, tileY, uint16(c), pals)
+	}
+}
+
+const (
+	START_X   int = 1
+	RESET_X   int = 7
+	SERVICE_X int = 13
+	OPTS_Y    int = 0x1e
+)
+
+var heldReset bool
+
+func (g *Game) check_opt_click() {
+	if inpututil.IsMouseButtonJustPressed(ebiten.MouseButtonLeft) {
+		x, y := ebiten.CursorPosition()
+		if y < OPTS_Y*8 || y >= (OPTS_Y+1)*8 {
+			return
+		}
+		if x >= START_X*8 && x < (START_X+5)*8 && !g.started {
+			g.StartEmu()
+		}
+		if x >= RESET_X*8 && x < (RESET_X+5)*8 {
+			heldReset = true
+		}
+		if x >= SERVICE_X*8 && x < (SERVICE_X+5)*8 {
+			g.SERVICE ^= 0x80
+			g.reset()
+		}
+	}
+	if inpututil.IsMouseButtonJustReleased(ebiten.MouseButtonLeft) {
+		heldReset = false
+		x, y := ebiten.CursorPosition()
+		if y < OPTS_Y*8 || y >= (OPTS_Y+1)*8 {
+			return
+		}
+		if x >= RESET_X*8 && x < (RESET_X+5)*8 {
+			g.reset()
+		}
+	}
+}
+
+func (g *Game) display_options() {
+	black := Palette{}
+	red := Palette{red: 0xff}
+	blue := Palette{blue: 0xff}
+	var unselected, selected [16]Palette
+	unselected[0] = black
+	selected[0] = black
+	for i := 1; i < 16; i++ {
+		unselected[i] = blue
+		selected[i] = red
+	}
+	if g.started {
+		g.display_string(START_X, OPTS_Y, "START", selected)
+	} else {
+		g.display_string(START_X, OPTS_Y, "START", unselected)
+	}
+
+	if heldReset {
+		g.display_string(RESET_X, OPTS_Y, "RESET", selected)
+	} else {
+		g.display_string(RESET_X, OPTS_Y, "RESET", unselected)
+	}
+
+	if g.SERVICE == 0 {
+		g.display_string(SERVICE_X, OPTS_Y, "SERVICE", unselected)
+	} else {
+		g.display_string(SERVICE_X, OPTS_Y, "SERVICE", selected)
+	}
 }
 
 func (g *Game) reset() {
@@ -198,10 +272,6 @@ func (g *Game) poll_keys() {
 	port_hold_handler(ebiten.KeyK, &g.P2_DOWN, 0x20, 0)
 	port_hold_handler(ebiten.KeyL, &g.P2_RIGHT, 0x40, 0)
 	port_hold_handler(ebiten.KeyJ, &g.P2_LEFT, 0x80, 0)
-
-	if !isJS {
-		port_toggle_handler(ebiten.KeyC, &g.SERVICE, 0, 0x80)
-	}
 }
 
 func (g *Game) curr_irq_scanline() int {
@@ -276,6 +346,19 @@ func (g *Game) plot_tile_row(x int, y int, b0 byte, b1 byte, b2 byte, b3 byte, p
 	g.plot_pixel(x+7, y, b3&0xf, pals)
 }
 
+func (g *Game) plot_tile(tileX int, tileY int, tileIdx uint16, pals [16]Palette) {
+	baseX := tileX * 8
+	baseY := tileY * 8
+	tileDataOffs := tileIdx * 0x20
+	for yi := 0; yi < 8; yi++ {
+		g.plot_tile_row(
+			baseX, baseY+yi,
+			g.tiles[tileDataOffs], g.tiles[tileDataOffs+1],
+			g.tiles[tileDataOffs+2], g.tiles[tileDataOffs+3], pals)
+		tileDataOffs += 4
+	}
+}
+
 func (g *Game) update_display() {
 	// reset tilemap pals
 	var defaultPals [16]Palette
@@ -313,16 +396,7 @@ func (g *Game) update_display() {
 			}
 			g.tilemap_pals[tileIdx] = currPals
 
-			tileDataOffs := tileIdx * 0x20
-			baseX := col * 8
-			baseY := row * 8
-			for yi := 0; yi < 8; yi++ {
-				g.plot_tile_row(
-					baseX, baseY+yi,
-					g.tiles[tileDataOffs], g.tiles[tileDataOffs+1],
-					g.tiles[tileDataOffs+2], g.tiles[tileDataOffs+3], currPals)
-				tileDataOffs += 4
-			}
+			g.plot_tile(col, row, tileIdx, currPals)
 		}
 	}
 
@@ -354,15 +428,8 @@ func (g *Game) Update() error {
 		g.exec_vm()
 	}
 	g.update_display()
-
-	if !isJS {
-		if inpututil.IsKeyJustPressed(ebiten.KeyBackspace) {
-			g.reset()
-		}
-		if inpututil.IsKeyJustPressed(ebiten.KeySpace) {
-			g.StartEmu()
-		}
-	}
+	g.display_options()
+	g.check_opt_click()
 
 	return nil
 }
